@@ -1,10 +1,13 @@
 package com.example.netra
 
 import android.Manifest
+import android.graphics.Paint
+import android.graphics.Typeface
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,38 +24,38 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.easyml.EasyML
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.easyml.camera.EasyMLCameraView
-import com.easyml.core.InferenceDevice
-import com.easyml.core.LabelSource
-import com.easyml.core.ModelSource
 import com.easyml.detection.Detection
+import com.easyml.detection.InferenceMetrics
 import com.example.netra.ui.theme.NetraTheme
+import com.example.netra.viewmodel.DetectionViewModel
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
 import com.google.accompanist.permissions.shouldShowRationale
 import kotlinx.collections.immutable.ImmutableList
-import kotlinx.collections.immutable.persistentListOf
-import kotlinx.collections.immutable.toImmutableList
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -72,61 +75,88 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalPermissionsApi::class)
 @Composable
-fun CameraPer(modifier: Modifier = Modifier) {
+fun CameraPer(
+    modifier: Modifier = Modifier,
+    viewModel: DetectionViewModel = viewModel()
+) {
     val context = LocalContext.current
     val cameraPermissionState = rememberPermissionState(Manifest.permission.CAMERA)
-    var currentDetections by remember { mutableStateOf<ImmutableList<Detection>>(persistentListOf()) }
-    var lastInferenceMs by remember { mutableLongStateOf(0L) }
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(cameraPermissionState.status.isGranted) {
+        if (cameraPermissionState.status.isGranted) {
+            viewModel.initializeDetector(context)
+        }
+    }
 
     if (cameraPermissionState.status.isGranted) {
-        val detector = remember {
-            EasyML.objectDetector(context) {
-                model = ModelSource.Asset("yolon.tflite")
-                labels = LabelSource.Asset("labels.txt")
-                confidenceThreshold = 0.35f
-                iouThreshold = 0.45f
-                maxResults = 20
-                device = InferenceDevice.AUTO
-                useFp16 = true
-                enableSmoothing = true
-                smoothingFactor = 0.3f
-                numThreads = 4
-            }
-        }
-
-        DisposableEffect(detector) {
-            onDispose {
-                detector.close()
-            }
-        }
-
         Box(modifier = modifier.fillMaxSize()) {
-            // Camera Preview + Real-time Bounding Box Canvas + FPS & Latency Counter
-            EasyMLCameraView(
-                detector = detector,
-                modifier = Modifier.fillMaxSize(),
-                showOverlay = true,                               // Draw bounding boxes on screen
-                showFps = true,                                   // Show FPS badge in top-left
-                showInferenceTime = true,                         // Show latency in ms in the badge
-                showLabels = true,
-                showConfidence = true,
-                cornerRadius = 8f,
-                overlayColor = Color(0xFF00E676),                 // Bounding box stroke color
-                onResults = { detections ->
-                    currentDetections = detections.toImmutableList() // Update state with live results
-                },
-                onInferenceTime = { ms ->
-                    lastInferenceMs = ms
+            when {
+                uiState.isLoading -> {
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        CircularProgressIndicator(color = Color(0xFF00E676))
+                        Spacer(Modifier.height(16.dp))
+                        Text(
+                            text = "Initializing EasyML Hardware Acceleration...",
+                            color = Color.Gray,
+                            fontSize = 14.sp
+                        )
+                    }
                 }
-            )
-            DetectionSummaryCard(
-                detections = currentDetections,
-                inferenceMs = lastInferenceMs,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .padding(16.dp)
-            )
+                uiState.errorMessage != null -> {
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "Error loading model:\n${uiState.errorMessage}",
+                            color = Color.Red,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+                uiState.detector != null -> {
+                    // Camera Preview
+                    EasyMLCameraView(
+                        detector = uiState.detector!!,
+                        modifier = Modifier.fillMaxSize(),
+                        showOverlay = true,                               // Draw bounding boxes on screen
+                        showFps = true,                                   // Show FPS badge in top-left
+                        showInferenceTime = true,                         // Show latency in ms in the badge
+                        showLabels = true,
+                        showConfidence = true,
+                        enableSmoothing = true,                           // Decoupled temporal box smoothing
+                        smoothingFactor = 0.35f,
+                        cornerRadius = 8f,
+                        strokeWidth = 4f,
+                        overlayColor = Color(0xFF00E676),                 // Bounding box stroke color
+                        onResults = { detections ->
+                            viewModel.onResults(detections)
+                        },
+                        onInferenceMetrics = { metrics ->
+                            viewModel.onInferenceMetrics(metrics)
+                        }
+                    )
+                    // Custom Overlay Canvas guarantees bounding box squares are always drawn over live stream
+                    DetectionOverlayCanvas(
+                        detections = uiState.detections,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    DetectionSummaryCard(
+                        detections = uiState.detections,
+                        metrics = uiState.metrics,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .padding(16.dp)
+                    )
+                }
+            }
         }
     } else {
         Column(
@@ -151,7 +181,7 @@ fun CameraPer(modifier: Modifier = Modifier) {
 @Composable
 fun DetectionSummaryCard(
     detections: ImmutableList<Detection>,
-    inferenceMs: Long,
+    metrics: InferenceMetrics?,
     modifier: Modifier = Modifier
 ) {
     Card(
@@ -173,11 +203,11 @@ fun DetectionSummaryCard(
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold
                 )
-                if (inferenceMs > 0) {
+                if (metrics != null && metrics.totalMs > 0) {
                     Text(
-                        text = "⚡ ${inferenceMs}ms",
+                        text = "⚡ %.1fms (inf: %.1fms)".format(metrics.totalMs, metrics.inferenceMs),
                         color = Color(0xFF00E676),
-                        fontSize = 13.sp,
+                        fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                 }
@@ -222,6 +252,98 @@ fun DetectionSummaryCard(
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun DetectionOverlayCanvas(
+    detections: ImmutableList<Detection>,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        val canvasWidth = size.width
+        val canvasHeight = size.height
+
+        for (detection in detections) {
+            val rect = detection.boundingBox
+
+            // Map coordinates cleanly for normalized (0..1) or pixel space (0..640)
+            val left = if (rect.left in 0f..1f && rect.right in 0f..1f) {
+                rect.left * canvasWidth
+            } else {
+                (rect.left / 640f) * canvasWidth
+            }
+            val top = if (rect.top in 0f..1f && rect.bottom in 0f..1f) {
+                rect.top * canvasHeight
+            } else {
+                (rect.top / 640f) * canvasHeight
+            }
+            val right = if (rect.left in 0f..1f && rect.right in 0f..1f) {
+                rect.right * canvasWidth
+            } else {
+                (rect.right / 640f) * canvasWidth
+            }
+            val bottom = if (rect.top in 0f..1f && rect.bottom in 0f..1f) {
+                rect.bottom * canvasHeight
+            } else {
+                (rect.bottom / 640f) * canvasHeight
+            }
+
+            val boxWidth = (right - left).coerceAtLeast(0f)
+            val boxHeight = (bottom - top).coerceAtLeast(0f)
+
+            if (boxWidth > 0f && boxHeight > 0f) {
+                // Translucent fill box
+                drawRect(
+                    color = Color(0x2200E676),
+                    topLeft = Offset(left, top),
+                    size = Size(boxWidth, boxHeight)
+                )
+
+                // High-contrast stroke box
+                drawRoundRect(
+                    color = Color(0xFF00E676),
+                    topLeft = Offset(left, top),
+                    size = Size(boxWidth, boxHeight),
+                    cornerRadius = CornerRadius(12f, 12f),
+                    style = Stroke(width = 6f)
+                )
+
+                // Label Badge
+                val labelText = "${detection.label} ${(detection.confidence * 100).toInt()}%"
+                drawContext.canvas.nativeCanvas.apply {
+                    val textPaint = Paint().apply {
+                        color = android.graphics.Color.WHITE
+                        textSize = 36f
+                        isAntiAlias = true
+                        typeface = Typeface.DEFAULT_BOLD
+                    }
+                    val bgPaint = Paint().apply {
+                        color = android.graphics.Color.argb(255, 30, 136, 229)
+                        style = Paint.Style.FILL
+                    }
+                    val textWidth = textPaint.measureText(labelText)
+                    val textHeight = 40f
+
+                    val badgeTop = (top - textHeight - 12f).coerceAtLeast(0f)
+                    val badgeBottom = badgeTop + textHeight + 12f
+
+                    drawRect(
+                        left,
+                        badgeTop,
+                        left + textWidth + 24f,
+                        badgeBottom,
+                        bgPaint
+                    )
+                    drawText(
+                        labelText,
+                        left + 12f,
+                        badgeBottom - 10f,
+                        textPaint
+                    )
                 }
             }
         }
