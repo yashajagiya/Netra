@@ -21,8 +21,7 @@
 ## 📸 Screenshots
 
 <p align="center">
-  <img src="1.jpeg" width="300" alt="Camera Scanning" />
-  <img src="2.jpeg" width="300" alt="Live Object Detection" />
+  <img src="app/src/main/assets/netra image.jpeg" width="300" alt="Live Object Detection" />
 </p>
 
 ---
